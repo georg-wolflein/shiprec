@@ -3,3 +3,4 @@ opencv-python
 openslide-python
 numpy
 matplotlib
+tqdm

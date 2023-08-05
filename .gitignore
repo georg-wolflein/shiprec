@@ -1,4 +1,5 @@
 *.code-workspace
+tests/test_slide.svs
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

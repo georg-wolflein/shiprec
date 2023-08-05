@@ -1,7 +1,7 @@
 version: "3.7"
 services:
   main:
-    container_name: georg-shipline
+    container_name: georg-shiprec
     build:
       context: .
       dockerfile: "Dockerfile"
@@ -21,5 +21,5 @@ services:
       memlock: -1
       stack: 67108864
     volumes:
-      - "${HOST_APP_FOLDER:-~/shipline}:/app"
+      - "${HOST_APP_FOLDER:-~/shiprec}:/app"
       - "/mnt/isilon1/georg:/data"

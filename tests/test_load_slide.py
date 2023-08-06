@@ -2,7 +2,7 @@ import openslide
 import numpy as np
 from pathlib import Path
 
-from shiprec.load_slide import read_region
+from shiprec.slide.load_slide import read_region
 
 
 def test_read_region():

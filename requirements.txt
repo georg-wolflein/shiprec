@@ -4,3 +4,7 @@ openslide-python
 numpy
 matplotlib
 tqdm
+scipy
+zarr
+dask[distributed]
+git+https://github.com/dask/crick.git

@@ -1,13 +1,20 @@
-import numpy as np
-
 """
 Source code adapted from: https://github.com/EIDOSLAB/torchstain/blob/main/torchstain/numpy/normalizers/macenko.py
   which was adapted from: https://github.com/schaugf/HEnorm_python
 Original implementation: https://github.com/mitkovetta/staining-normalization
 """
 
+import numpy as np
 
-class NumpyMacenkoNormalizer:
+from .base import HENormalizer
+
+
+def printd(name, value):
+    print(f"=== {name} ===")
+    print(value)
+
+
+class NumpyMacenkoNormalizer(HENormalizer):
     def __init__(self):
         super().__init__()
 
@@ -30,11 +37,19 @@ class NumpyMacenkoNormalizer:
 
         phi = np.arctan2(That[:, 1], That[:, 0])
 
+        printd("That", That)
+        printd("phi", phi)
+
         minPhi = np.percentile(phi, alpha)
         maxPhi = np.percentile(phi, 100 - alpha)
 
+        printd("minPhi", minPhi), printd("maxPhi", maxPhi)
+
         vMin = eigvecs[:, 1:3].dot(np.array([(np.cos(minPhi), np.sin(minPhi))]).T)
         vMax = eigvecs[:, 1:3].dot(np.array([(np.cos(maxPhi), np.sin(maxPhi))]).T)
+
+        printd("vMin", vMin[:, 0])
+        printd("vMax", vMax[:, 0])
 
         # a heuristic to make the vector corresponding to hematoxylin first and the
         # one corresponding to eosin second
@@ -60,14 +75,21 @@ class NumpyMacenkoNormalizer:
         OD, ODhat = self.__convert_rgb2od(I, Io=Io, beta=beta)
 
         # compute eigenvectors
-        _, eigvecs = np.linalg.eigh(np.cov(ODhat.T))
+        cov = np.cov(ODhat.T)
+        printd("cov", cov)
+        _, eigvecs = np.linalg.eigh(cov)
+        printd("eigvecs", eigvecs)
 
         HE = self.__find_HE(ODhat, eigvecs, alpha)
 
         C = self.__find_concentration(OD, HE)
 
         # normalize stain concentrations
-        maxC = np.array([np.percentile(C[0, :], 99), np.percentile(C[1, :], 99)])
+        maxC = np.array([np.percentile(C[0], 99), np.percentile(C[1], 99)])
+
+        printd("HE", HE)
+        printd("C", C)
+        printd("maxC", maxC)
 
         return HE, C, maxC
 
@@ -109,16 +131,23 @@ class NumpyMacenkoNormalizer:
         Inorm[Inorm > 255] = 255
         Inorm = np.reshape(Inorm.T, (h, w, c)).astype(np.uint8)
 
-        H, E = None, None
+        return Inorm
 
-        if stains:
-            # unmix hematoxylin and eosin
-            H = np.multiply(Io, np.exp(np.expand_dims(-self.HERef[:, 0], axis=1).dot(np.expand_dims(C2[0, :], axis=0))))
-            H[H > 255] = 255
-            H = np.reshape(H.T, (h, w, c)).astype(np.uint8)
 
-            E = np.multiply(Io, np.exp(np.expand_dims(-self.HERef[:, 1], axis=1).dot(np.expand_dims(C2[1, :], axis=0))))
-            E[E > 255] = 255
-            E = np.reshape(E.T, (h, w, c)).astype(np.uint8)
+if __name__ == "__main__":
+    import cv2
+    from pathlib import Path
 
-        return Inorm, H, E
+    TARGET_PATCH_FILE = Path(__file__).parent.parent.parent / "normalization_template.jpg"
+    target_np = cv2.cvtColor(cv2.imread(str(TARGET_PATCH_FILE)), cv2.COLOR_BGR2RGB)
+    img_np = cv2.resize(target_np[200:300, 200:500], (2048, 2560))
+
+    norm_np = NumpyMacenkoNormalizer()
+    norm_np.fit(target_np)
+
+    print("=========================")
+    print("Normalizing image")
+    print("=========================")
+
+    normed_np = norm_np.normalize(img_np)
+    print(normed_np)

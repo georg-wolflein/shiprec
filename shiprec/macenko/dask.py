@@ -157,11 +157,8 @@ class DaskMacenkoNormalizer(HENormalizer):
         self.HERef = HE
         self.maxCRef = maxC
 
-    def normalize(self, I, Io=240, alpha=1, beta=0.15):
-        I_chunks = I.chunks
-        h, w, c = I.shape
-        I = I.reshape((-1, 3))
-
+    def normalize_flattened_image(self, I: da.Array, Io=240, alpha=1, beta=0.15):
+        # I should be of shape (N, 3)
         HE, C, maxC = self._compute_matrices(I, Io, alpha, beta)
 
         maxC = da.divide(maxC, self.maxCRef)
@@ -171,7 +168,16 @@ class DaskMacenkoNormalizer(HENormalizer):
         Inorm = da.multiply(Io, da.exp(-self.HERef.dot(C2)))
         Inorm[Inorm > 255] = 255
         Inorm = Inorm.astype(I.dtype)
-        Inorm = da.reshape(Inorm.T, (h, w, c))
+        Inorm = Inorm.T
+        Inorm = Inorm.rechunk(I.chunks)
+        return Inorm
 
-        Inorm = Inorm.rechunk(I_chunks)
+    def normalize(self, I, Io=240, alpha=1, beta=0.15):
+        I_chunks = I.chunks
+        h, w, c = I.shape
+        I = I.reshape((-1, 3))
+
+        Inorm = self.normalize_flattened_image(I, Io, alpha, beta)
+
+        Inorm = da.reshape(Inorm, (h, w, c))
         return Inorm

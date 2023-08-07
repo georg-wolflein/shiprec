@@ -99,7 +99,7 @@ class OpenSlideStore(BaseStore):
             x, y, level = _parse_chunk_path(key)
             location = self._ref_pos(x, y, level)
             size = (self._tilesize, self._tilesize)
-            print("read", x, y, location, level, size)
+            # print("read", x, y, location, level, size)
             # tile = np.array(self._slide.read_region(location, level, size))[..., :3]
             tile = read_region(self._slide, location, level, size)
         except ArgumentError as err:

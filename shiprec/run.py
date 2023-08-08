@@ -10,9 +10,10 @@ from loguru import logger
 from concurrent.futures import Future
 from torch import nn
 from typing import NamedTuple, Sequence, Union
+from time import time
 
 import shiprec
-from shiprec.read import load_slide
+from shiprec.slide import load_slide, Backend as SlideBackend
 from shiprec.progress import tqdm_dask
 from shiprec.cluster import MixedCluster
 from shiprec.patching import split_slide_into_patches, flatten_patches_and_coords
@@ -64,14 +65,17 @@ def process_slide(
     slide_file: Path,
     patch_size: int = 224,
     target_mpp=256.0 / 224.0,
+    macenko_batch_size: int = 256,
+    feature_extraction_batch_size: int = 256,  # recommended to be a multiple or divisor of macenko_batch_size
     synchronous_saving: bool = False,
+    slide_backend: SlideBackend = "cucim",
 ) -> Union[Future, Sequence[Future], None]:
     """Process a slide and save the features to disk."""
 
     client, stain_target, model, has_gpu_devices = pipeline_setup
 
     # Load the slide
-    slide = load_slide(slide_file, target_mpp=target_mpp)
+    slide = load_slide(slide_file, target_mpp=target_mpp, backend=slide_backend)
 
     # Split the slide into patches
     patches, patch_coords = split_slide_into_patches(slide, patch_size=patch_size)
@@ -91,13 +95,14 @@ def process_slide(
     # We need deterministic chunk sizes for the following steps
     patches.compute_chunk_sizes()
     patch_coords.compute_chunk_sizes()
-    patches = patches.rechunk((256, patch_size, patch_size, 3))
+    patches = patches.rechunk((macenko_batch_size, patch_size, patch_size, 3))
 
     # Perform Macenko normalization
     normalizer = DaskMacenkoNormalizer(exact=True)
     normalizer.fit(stain_target)
     normalized = normalizer.normalize_flattened_image(patches.reshape(-1, 3))
     normalized = normalized.reshape(patches.shape)
+    normalized = normalized.rechunk((feature_extraction_batch_size, patch_size, patch_size, 3))
     normalized = normalized.persist()
     tqdm_dask(normalized, desc="Macenko normalization")
 
@@ -137,7 +142,12 @@ def process_slide(
 
 
 if __name__ == "__main__":
+    t0 = time()
+
     # Setup the pipeline
-    setup = setup_pipeline()
+    setup = setup_pipeline(gpu_devices=(2,))
+    logger.info(f"Setup took {(t1:=time()) - t0:.2f} seconds")
+
     # Process the slide
     process_slide(setup, SLIDE_FILE, synchronous_saving=True)
+    logger.info(f"Processing took {(t2:=time()) - t1:.2f} seconds")

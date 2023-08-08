@@ -15,7 +15,7 @@ from openslide import OpenSlide
 from zarr.storage import _path_to_prefix, attrs_key, init_array, init_group, BaseStore
 from zarr.util import json_dumps, normalize_storage_path
 
-from .region import read_region
+from .readers import SlideReader, make_slide_reader
 
 
 def init_attrs(store: MutableMapping, attrs: Mapping[str, Any], path: str = None):
@@ -24,13 +24,15 @@ def init_attrs(store: MutableMapping, attrs: Mapping[str, Any], path: str = None
     store[path + attrs_key] = json_dumps(attrs)
 
 
-def create_meta_store(slide: OpenSlide, tilesize: int, level_dimensions: Sequence[Tuple[int, int]]) -> Dict[str, bytes]:
+def create_meta_store(
+    slide: SlideReader, tilesize: int, level_dimensions: Sequence[Tuple[int, int]]
+) -> Dict[str, bytes]:
     """Creates a dict containing the zarr metadata for the multiscale openslide image."""
     store = dict()
     root_attrs = {
         "multiscales": [
             {
-                "name": Path(slide._filename).name,
+                "name": slide._path.name,
                 "datasets": [{"path": str(i)} for i in range(len(level_dimensions))],
                 "version": "0.1",
             }
@@ -62,8 +64,8 @@ def _pad_level_dimensions(level_dimensions: Sequence[Tuple[int, int]], tilesize:
     return [(int(np.ceil(x / tilesize)) * tilesize, int(np.ceil(y / tilesize)) * tilesize) for x, y in level_dimensions]
 
 
-class OpenSlideStore(BaseStore):
-    """Wraps an OpenSlide object as a multiscale Zarr Store.
+class SlideStore(BaseStore):
+    """Wraps a SlideReader object as a multiscale Zarr Store.
 
     Parameters
     ----------
@@ -79,9 +81,9 @@ class OpenSlideStore(BaseStore):
     _listable = True
     _store_version = 2
 
-    def __init__(self, path: str, tilesize: int = 512, pad: bool = True):
+    def __init__(self, path: str, tilesize: int = 512, pad: bool = True, backend: str = "openslide"):
         self._path = path
-        self._slide = OpenSlide(path)
+        self._slide = make_slide_reader(path, backend=backend)
         self._tilesize = tilesize
         self._level_dimensions = (
             _pad_level_dimensions(self._slide.level_dimensions, tilesize) if pad else self._slide.level_dimensions
@@ -101,7 +103,7 @@ class OpenSlideStore(BaseStore):
             size = (self._tilesize, self._tilesize)
             # print("read", x, y, location, level, size)
             # tile = np.array(self._slide.read_region(location, level, size))[..., :3]
-            tile = read_region(self._slide, location, level, size)
+            tile = self._slide.read_region(location, level, size)
         except ArgumentError as err:
             # Can occur if trying to read a closed slide
             raise err
@@ -130,7 +132,7 @@ class OpenSlideStore(BaseStore):
             return False
 
     def __eq__(self, other):
-        return isinstance(other, OpenSlideStore) and self._slide._filename == other._slide._filename
+        return isinstance(other, SlideStore) and self._slide._filename == other._slide._filename
 
     def __setitem__(self, key, val):
         raise RuntimeError("__setitem__ not implemented")
@@ -174,4 +176,4 @@ class OpenSlideStore(BaseStore):
 if __name__ == "__main__":
     import sys
 
-    store = OpenSlideStore(sys.argv[1])
+    store = SlideStore(sys.argv[1])

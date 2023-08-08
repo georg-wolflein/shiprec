@@ -8,3 +8,4 @@ scipy
 zarr
 dask[distributed]
 git+https://github.com/dask/crick.git
+jupyter-server-proxy

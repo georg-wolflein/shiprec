@@ -6,9 +6,10 @@ cluster:
   memory_limit: 32GB # memory limit per worker
   optimize_graph: true # whether to optimize the graph before execution; useful to set to false for debugging
 input:
-  path: /mnt/bulk/gwoelflein/georg-tcga-slides/TCGA-BRCA-DX-IMGS_1133 # path to folder containing slides
+  path: /mnt/bulk/gwoelflein/georg-tcga-slides/tcga_brca_test # path to folder containing slides
   glob: "*.svs" # glob pattern for slides
   slide_backend: cucim # supported options: openslide, cucim
+  num_slides: # number of slides to process; if empty, all slides will be processed
 pipeline:
   n_parallel_slides: 2 # number of slides to process in parallel
   patch_size: 224

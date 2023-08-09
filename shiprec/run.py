@@ -46,7 +46,7 @@ def find_slides(cfg: DictConfig) -> Sequence[Path]:
         logger.info(f"{len(slide_files)} slides have not been processed yet")
     else:
         logger.warning(f"No slides found in {input_dir}")
-    return slide_files
+    return sorted(slide_files)
 
 
 def setup(cfg: DictConfig) -> Tuple[Client, PipelineSetup]:
@@ -114,30 +114,39 @@ def process_slide(
     slide_file: Path,
     cfg: DictConfig,
     client: Client = None,
+    check_status: bool = True,
 ):
     """Process a slide and save the features to disk."""
     start_time = time()
     slide_file = Path(slide_file)
     if client is None:
         client = get_client()
-        wait = secede_wait_rejoin
+        # wait = secede_wait_rejoin # TODO: check if this is faster
 
     optimize_graph = cfg.cluster.optimize_graph
 
     normalizer, model, has_gpu_devices = pipeline_setup
 
+    futures_to_cancel = []
+
     # Check if the slide has already been processed
     status_file = Path(cfg.output.path) / "status" / f"{slide_file.stem}.done"
-    if status_file.exists():
+    if check_status and status_file.exists():
         logger.info(f"Skipping {slide_file.stem} because it has already been processed")
-        return slide_file
+        return slide_file, None
+
+    def write_status_file(message: str = "done"):
+        status_file.parent.mkdir(parents=True, exist_ok=True)
+        with status_file.open("w") as f:
+            f.write(message)
 
     # Load the slide
     try:
         slide = load_slide(slide_file, target_mpp=cfg.pipeline.target_mpp, backend=cfg.input.slide_backend)
     except MPPExtractionError:
         logger.warning(f"Could not extract MPP for {slide_file}, skipping")
-        return slide_file
+        write_status_file("mpp_extraction_error")
+        return slide_file, None
 
     # Split the slide into patches
     patches, patch_coords = split_slide_into_patches(slide, patch_size=cfg.pipeline.patch_size)
@@ -153,6 +162,7 @@ def process_slide(
     patches, patch_coords, patch_mask = client.persist(
         (patches, patch_coords, patch_mask), optimize_graph=optimize_graph
     )
+    futures_to_cancel.extend((patches, patch_coords, patch_mask))
     logger.debug("Loading patches, filtering background")
     wait((patches, patch_coords))
     # tqdm_dask((patches, patch_coords), desc="Loading patches, filtering background")
@@ -181,6 +191,7 @@ def process_slide(
             (cfg.pipeline.feature_extraction.batch_size, cfg.pipeline.patch_size, cfg.pipeline.patch_size, 3)
         )
         normalized = normalized.persist(optimize_graph=optimize_graph)
+        futures_to_cancel.append(normalized)
         logger.debug("Performing Macenko normalization")
         wait(normalized)
         # tqdm_dask(normalized, desc="Macenko normalization")
@@ -194,6 +205,7 @@ def process_slide(
     # NOTE: if optimize_graph=True, then the graph optimization might move the model to a non-GPU worker (but
     # if we don't have any GPU workers, then this is not a problem)
     features = features.persist(optimize_graph=not has_gpu_devices)
+    futures_to_cancel.append(features)
     logger.debug("Extracting features")
     wait(features)
     # tqdm_dask(features, desc="Extracting features")
@@ -258,14 +270,14 @@ def process_slide(
     # tqdm_dask(saving_future, desc="Saving output")
 
     # Write status file
-    status_file.parent.mkdir(parents=True, exist_ok=True)
-    with status_file.open("w") as f:
-        f.write("done")
+    write_status_file()
 
-    end_time = time()
-    logger.info(f"Processing {slide_file} took {end_time - start_time:.2f} seconds")
+    elapsed = time() - start_time
+    logger.debug(f"Processing {slide_file.stem} took {elapsed:.2f} seconds")
 
-    return slide_file
+    client.cancel(futures_to_cancel)
+
+    return slide_file, elapsed
 
 
 def contextual_fn(fn, **context):
@@ -287,33 +299,45 @@ def main(cfg: DictConfig):
 
     # Process slides
     t0 = time()
-    if cfg.pipeline.n_parallel_slides > 1:
-        futures = set()
-        with tqdm(total=len(slide_files), desc="Processing slides") as pbar:
-            for i, slide_file in enumerate(slide_files):
-                if len(futures) >= cfg.pipeline.n_parallel_slides:
-                    done, futures = wait(futures, return_when="FIRST_COMPLETED")
-                    for future in done:
-                        logger.info(f"Finished processing {future.result().stem}")
-                        pbar.update(1)
-                        del future
-                logger.info(f"Queuing slide {i+1}/{len(slide_files)}: {slide_file.name}")
-                future = client.submit(contextual_fn(process_slide, slide_id=i), pipeline_setup, slide_file, cfg)
-                futures.add(future)
-
-            # Wait for all slides to finish
-            while futures:
+    times_per_slide = []
+    futures = set()
+    with tqdm(total=len(slide_files), desc="Processing slides") as pbar:
+        for i, slide_file in enumerate(slide_files):
+            if len(futures) >= cfg.pipeline.n_parallel_slides:
                 done, futures = wait(futures, return_when="FIRST_COMPLETED")
                 for future in done:
-                    logger.info(f"Finished processing {future.result().stem}")
+                    finished_slide, elapsed = future.result()
+                    times_per_slide.append(elapsed)
+                    logger.info(
+                        f"Finished processing {finished_slide.stem} in {elapsed or 0:.2f} seconds (mean: {np.nanmean(times_per_slide):.2f} seconds per side)"
+                    )
                     pbar.update(1)
                     del future
-            done, futures = wait(futures, return_when="ALL_COMPLETED")
-    else:
-        for slide_file in tqdm(slide_files, desc="Processing slides"):
-            process_slide(pipeline_setup, slide_file, cfg, client=client)
+            logger.info(f"Queuing slide {i+1}/{len(slide_files)}: {slide_file.name}")
+            future = client.submit(contextual_fn(process_slide, slide_id=i), pipeline_setup, slide_file, cfg)
+            futures.add(future)
 
-    logger.info(f"Finished processing {len(slide_files)} slides in {time() - t0:.2f} seconds")
+        # Wait for all slides to finish
+        while futures:
+            done, futures = wait(futures, return_when="FIRST_COMPLETED")
+            for future in done:
+                finished_slide, elapsed = future.result()
+                times_per_slide.append(elapsed)
+                logger.info(
+                    f"Finished processing {finished_slide.stem} in {elapsed:.2f} seconds (mean: {np.nanmean(times_per_slide):.2f} seconds per side)"
+                )
+                pbar.update(1)
+                del future
+        done, futures = wait(futures, return_when="ALL_COMPLETED")
+    # else:
+    #     for slide_file in tqdm(slide_files, desc="Processing slides"):
+    #         finished_slide, elapsed = process_slide(pipeline_setup, slide_file, cfg, client=client)
+    #         times_per_slide.append(elapsed)
+
+    total_time = time() - t0
+    logger.info(
+        f"Finished processing {len(slide_files)} slides in {total_time:.2f} seconds (mean: {np.nanmean(times_per_slide):.2f} seconds per side sequentially, {total_time / (len(slide_files) - np.isnan(np.array(times_per_slide)).sum()):.2f} seconds per slide in parallel when )"
+    )
 
     # Shutdown the Dask cluster
     logger.info("Shutting down Dask cluster")

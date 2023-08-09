@@ -8,15 +8,28 @@ from concurrent.futures import Future
 import dask.array as da
 import dask
 import numpy as np
+from typing import Literal, Union
+from loguru import logger
 
 transform = T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 
 
-def load_model() -> nn.Module:
-    checkpoint_path = Path("/app/weights") / "ctranspath.pth"
+def load_model(model: Literal["ctranspath"], weights_path: Union[Path, str]) -> nn.Module:
+    assert model == "ctranspath", "Only ctranspath is supported"
+    weights_path = Path(weights_path)
+    if not weights_path.exists():
+        logger.info("Downloading weights")
+        weights_path.parent.mkdir(parents=True, exist_ok=True)
+        import gdown
+
+        gdown.download(
+            "https://drive.google.com/u/0/uc?id=1DoDx_70_TLj98gTf6YTXnu4tFhsFocDX&export=download",
+            str(weights_path),
+            quiet=False,
+        )
 
     sha256 = hashlib.sha256()
-    with open(checkpoint_path, "rb") as f:
+    with weights_path.open("rb") as f:
         while True:
             data = f.read(1 << 16)
             if not data:
@@ -28,7 +41,7 @@ def load_model() -> nn.Module:
     model = swin_tiny_patch4_window7_224(embed_layer=ConvStem, pretrained=False)
     model.head = nn.Identity()
 
-    ctranspath = torch.load(checkpoint_path, map_location=torch.device("cpu"))
+    ctranspath = torch.load(weights_path, map_location=torch.device("cpu"))
     model.load_state_dict(ctranspath["model"], strict=True)
 
     model.eval()

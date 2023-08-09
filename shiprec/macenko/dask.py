@@ -72,11 +72,14 @@ class DaskMacenkoNormalizer(HENormalizer):
             The inexact method usually isn't far off, however, especially for large tile chunk sizes.
         """
         super().__init__()
-
         self.HERef = da.array([[0.5626, 0.2159], [0.7201, 0.8012], [0.4062, 0.5581]])
         self.maxCRef = da.array([1.9705, 1.0308])
 
-        self._percentile = _PERCENTILE_METHODS["np" if exact else "tdigest"]
+        self._exact = exact
+
+    @property
+    def _percentile(self):
+        return _PERCENTILE_METHODS["np" if self._exact else "tdigest"]
 
     def _convert_rgb2od(self, I, Io=240, beta=0.15):
         # Calculate optical density
@@ -151,8 +154,11 @@ class DaskMacenkoNormalizer(HENormalizer):
 
         return HE, C, maxC
 
-    def fit(self, I, Io=240, alpha=1, beta=0.15):
+    def fit(self, I, Io=240, alpha=1, beta=0.15, persist: bool = True):
         HE, _, maxC = self._compute_matrices(I, Io, alpha, beta)
+
+        if persist:
+            HE, maxC = dask.persist(HE, maxC)
 
         self.HERef = HE
         self.maxCRef = maxC
@@ -181,3 +187,15 @@ class DaskMacenkoNormalizer(HENormalizer):
 
         Inorm = da.reshape(Inorm, (h, w, c))
         return Inorm
+
+    def __getstate__(self) -> object:
+        return {
+            "HERef": self.HERef,
+            "maxCRef": self.maxCRef,
+            "_exact": self._exact,
+        }
+
+    def __setstate__(self, state: object) -> None:
+        self.HERef = state["HERef"]
+        self.maxCRef = state["maxCRef"]
+        self._exact = state["_exact"]

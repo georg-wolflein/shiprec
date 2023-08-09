@@ -21,8 +21,8 @@ class MPPExtractor:
         for extractor in self.extractors:
             try:
                 slide_mpp = extractor(*args, **kwargs)
-                logger.info(f"MPP successfully extracted using {extractor.__name__}: {slide_mpp:.3f}")
+                logger.debug(f"MPP successfully extracted using {extractor.__name__}: {slide_mpp:.3f}")
                 return slide_mpp
             except MPPExtractionError:
-                logger.info(f"MPP could not be extracted using {extractor.__name__}")
+                logger.debug(f"MPP could not be extracted using {extractor.__name__}")
         raise MPPExtractionError("MPP could not be extracted from slide")

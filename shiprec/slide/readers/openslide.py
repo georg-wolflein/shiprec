@@ -64,7 +64,10 @@ def extract_mpp_from_metadata(slide: openslide.OpenSlide) -> float:
     import xml.dom.minidom as minidom
 
     xml_path = slide.properties["tiff.ImageDescription"]
-    doc = minidom.parseString(xml_path)
+    try:
+        doc = minidom.parseString(xml_path)
+    except Exception:
+        raise MPPExtractionError
     collection = doc.documentElement
     images = collection.getElementsByTagName("Image")
     pixels = images[0].getElementsByTagName("Pixels")

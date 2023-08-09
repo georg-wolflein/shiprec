@@ -9,6 +9,7 @@ from loguru import logger
 
 from .slide_store import SlideStore
 from .readers import make_slide_reader, Backend
+from .readers.mpp import MPPExtractionError
 
 
 def load_slide(
@@ -29,7 +30,7 @@ def load_slide(
             level = slide.get_best_level_for_downsample(target_mpp / slide_mpp)
 
         level_mpp = slide.level_downsamples[level] * slide_mpp
-        logger.info(f"Using level {level} with {level_mpp=:.3f} for {slide_mpp=:.3f} and {target_mpp=:.3f}")
+        logger.debug(f"Using level {level} with {level_mpp=:.3f} for {slide_mpp=:.3f} and {target_mpp=:.3f}")
 
     target_slide_chunk_size = 224 * 20
     loaded_slide_chunk_size = np.ceil(target_slide_chunk_size * target_mpp / level_mpp).astype(int)

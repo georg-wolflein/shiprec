@@ -11,3 +11,5 @@ git+https://github.com/dask/crick.git
 jupyter-server-proxy
 cucim
 scikit-image
+hydra-core
+omegaconf

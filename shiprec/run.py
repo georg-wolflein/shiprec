@@ -5,12 +5,13 @@ from pathlib import Path
 import dask.array as da
 import dask
 import torch
-from dask.distributed import Client
+from dask.distributed import Client, wait, get_client, secede, rejoin
 from loguru import logger
 from concurrent.futures import Future
 from torch import nn
-from typing import NamedTuple, Sequence, Union
+from typing import NamedTuple, Sequence, Union, Tuple
 from time import time
+from omegaconf import DictConfig
 
 import shiprec
 from shiprec.slide import load_slide, Backend as SlideBackend
@@ -20,22 +21,35 @@ from shiprec.patching import split_slide_into_patches, flatten_patches_and_coord
 from shiprec.canny import get_canny_foreground_mask
 from shiprec.macenko.dask import DaskMacenkoNormalizer
 from shiprec.feature_extraction import load_model, extract_features
-from shiprec.utils import fix_dask_torch  # noqa
-
-SLIDE_FILE = "/data/data/TCGA-BRCA-DX-IMGS_1133/TCGA-AO-A12B-01Z-00-DX1.B215230B-5FF7-4B0A-9C1E-5F1658534B11.svs"
-TARGET_PATCH_FILE = "/app/normalization_template.jpg"
+from shiprec.utils import hydra, fix_dask_torch  # noqa
 
 
 class PipelineSetup(NamedTuple):
-    client: Client
     stain_target: da.Array
     model: Future[nn.Module]
     has_gpu_workers: bool
 
 
-def setup_pipeline(n_cpu_workers: int = 8, gpu_devices: Sequence[int] = (), memory_limit="32GB") -> PipelineSetup:
+def find_slides(cfg: DictConfig) -> Sequence[Path]:
+    """Find all slides in the input directory."""
+    input_dir = Path(cfg.input.path)
+    assert input_dir.is_dir(), f"Input directory {input_dir} does not exist"
+    slide_files = list(input_dir.glob(cfg.input.glob))
+    if slide_files:
+        logger.info(f"Found {len(slide_files)} slides in {input_dir}")
+    else:
+        logger.warning(f"No slides found in {input_dir}")
+    return slide_files
+
+
+def setup(cfg: DictConfig) -> Tuple[Client, PipelineSetup]:
+    start_time = time()
     # Start the Dask cluster
-    cluster = MixedCluster(n_cpu_workers=n_cpu_workers, gpu_devices=gpu_devices, memory_limit=memory_limit)
+    cluster = MixedCluster(
+        n_cpu_workers=cfg.cluster.n_cpu_workers,
+        gpu_devices=cfg.cluster.gpu_devices or (),
+        memory_limit=cfg.cluster.memory_limit,
+    )
     client = Client(cluster.scheduler_address)
     gpu_workers = [
         (w.host, w.port) for w in cluster.workers.values() if w.resources is not None and w.resources.get("GPU", 0) > 0
@@ -44,9 +58,16 @@ def setup_pipeline(n_cpu_workers: int = 8, gpu_devices: Sequence[int] = (), memo
     logger.info(f"Access the Dask dashboard at {cluster.dashboard_link}")
 
     # Load the stain target
-    stain_target = cv2.cvtColor(cv2.imread(str(TARGET_PATCH_FILE)), cv2.COLOR_BGR2RGB)
-    stain_target = da.from_array(stain_target)
-    stain_target = client.persist(stain_target)
+    if cfg.pipeline.stain_normalization.enabled:
+        assert cfg.pipeline.stain_normalization.method == "macenko", "Only Macenko normalization is supported"
+        stain_target = cv2.cvtColor(cv2.imread(str(cfg.pipeline.stain_normalization.template)), cv2.COLOR_BGR2RGB)
+        stain_target = da.from_array(stain_target)
+        stain_target = client.persist(stain_target)
+    else:
+        assert (
+            not cfg.output.normalized_patches.save
+        ), "Cannot save normalized patches if stain normalization is disabled"
+        stain_target = None
 
     # Load feature extraction model
     logger.info("Loading feature extraction model")
@@ -57,28 +78,37 @@ def setup_pipeline(n_cpu_workers: int = 8, gpu_devices: Sequence[int] = (), memo
     # TODO: send the model to the GPU workers only (currently it is sent to all workers)
     dmodel = client.scatter(model)
     logger.info("Loaded and scattered feature extractor to workers")
-    return PipelineSetup(client, stain_target, dmodel, has_gpu_workers=len(gpu_devices) > 0)
+
+    end_time = time()
+    logger.info(f"Setup took {end_time - start_time:.2f} seconds")
+
+    return client, PipelineSetup(
+        stain_target=stain_target,
+        model=dmodel,
+        has_gpu_workers=len(cfg.cluster.gpu_devices or ()) > 0,
+    )
 
 
 def process_slide(
     pipeline_setup: PipelineSetup,
     slide_file: Path,
-    patch_size: int = 224,
-    target_mpp=256.0 / 224.0,
-    macenko_batch_size: int = 256,
-    feature_extraction_batch_size: int = 256,  # recommended to be a multiple or divisor of macenko_batch_size
-    synchronous_saving: bool = False,
-    slide_backend: SlideBackend = "cucim",
-) -> Union[Future, Sequence[Future], None]:
+    cfg: DictConfig,
+    client: Client = None,
+    optimize_graph: bool = True,
+):
     """Process a slide and save the features to disk."""
+    start_time = time()
 
-    client, stain_target, model, has_gpu_devices = pipeline_setup
+    if client is None:
+        client = get_client()
+
+    stain_target, model, has_gpu_devices = pipeline_setup
 
     # Load the slide
-    slide = load_slide(slide_file, target_mpp=target_mpp, backend=slide_backend)
+    slide = load_slide(slide_file, target_mpp=cfg.pipeline.target_mpp, backend=cfg.input.slide_backend)
 
     # Split the slide into patches
-    patches, patch_coords = split_slide_into_patches(slide, patch_size=patch_size)
+    patches, patch_coords = split_slide_into_patches(slide, patch_size=cfg.pipeline.patch_size)
     patches, patch_coords = flatten_patches_and_coords(patches, patch_coords)
 
     # Filter out background patches
@@ -87,24 +117,31 @@ def process_slide(
     patch_coords = patch_coords[patch_mask]
 
     # Cache the patches and patch coordinates
-    patches, patch_coords = client.persist((patches, patch_coords))
-
-    # Show a progress bar for loading and canny rejection
-    tqdm_dask(patches, desc="Loading patches, filtering background")
+    patches, patch_coords = client.persist((patches, patch_coords), optimize_graph=optimize_graph)
+    logger.debug("Loading patches, filtering background")
+    wait((patches, patch_coords))
+    # tqdm_dask((patches, patch_coords), desc="Loading patches, filtering background")
 
     # We need deterministic chunk sizes for the following steps
     patches.compute_chunk_sizes()
     patch_coords.compute_chunk_sizes()
-    patches = patches.rechunk((macenko_batch_size, patch_size, patch_size, 3))
+    patches = patches.rechunk(
+        (cfg.pipeline.stain_normalization.batch_size, cfg.pipeline.patch_size, cfg.pipeline.patch_size, 3)
+    )
 
     # Perform Macenko normalization
+    # TODO: do the fitting in the setup function
     normalizer = DaskMacenkoNormalizer(exact=True)
     normalizer.fit(stain_target)
     normalized = normalizer.normalize_flattened_image(patches.reshape(-1, 3))
     normalized = normalized.reshape(patches.shape)
-    normalized = normalized.rechunk((feature_extraction_batch_size, patch_size, patch_size, 3))
-    normalized = normalized.persist()
-    tqdm_dask(normalized, desc="Macenko normalization")
+    normalized = normalized.rechunk(
+        (cfg.pipeline.feature_extraction.batch_size, cfg.pipeline.patch_size, cfg.pipeline.patch_size, 3)
+    )
+    normalized = normalized.persist(optimize_graph=optimize_graph)
+    logger.debug("Performing Macenko normalization")
+    wait(normalized)
+    # tqdm_dask(normalized, desc="Macenko normalization")
 
     # Extract features
     features = extract_features(model, normalized, use_cuda=has_gpu_devices)
@@ -113,7 +150,9 @@ def process_slide(
     # NOTE: if optimize_graph=True, then the graph optimization might move the model to a non-GPU worker (but
     # if we don't have any GPU workers, then this is not a problem)
     features = features.persist(optimize_graph=not has_gpu_devices)
-    tqdm_dask(features, desc="Extracting features")
+    logger.debug("Extracting features")
+    wait(features)
+    # tqdm_dask(features, desc="Extracting features")
 
     # Save
     save_format = "h5py"
@@ -135,19 +174,51 @@ def process_slide(
         saved_coords = da.to_zarr(patch_coords.rechunk(-1), "coords.zarr", overwrite=True, compute=False)
         saving_future = (saved_features, saved_coords)
 
-    if synchronous_saving:
-        tqdm_dask(saving_future, desc="Saving features")
+    # Show a progress bar for saving
+    wait(saving_future)
+    # tqdm_dask(saving_future, desc="Saving output")
+
+    end_time = time()
+    logger.info(f"Processing {slide_file} took {end_time - start_time:.2f} seconds")
+
+    return slide_file
+
+
+@hydra.main(config_path=str(Path(__file__).parent.parent), config_name="config", version_base="1.2")
+def main(cfg: DictConfig):
+    # Setup the pipeline
+    client, pipeline_setup = setup(cfg)
+
+    # Find all slides
+    # slide_files = find_slides(cfg)
+    SLIDE_FILE = "/data/data/TCGA-BRCA-DX-IMGS_1133/TCGA-AO-A12B-01Z-00-DX1.B215230B-5FF7-4B0A-9C1E-5F1658534B11.svs"
+    slide_files = [SLIDE_FILE]
+
+    # Process slides
+    if cfg.pipeline.n_parallel_slides > 1:
+        assert False
+        futures = []
+        for slide_file in slide_files:
+            if len(futures) >= cfg.pipeline.n_parallel_slides:
+                done, futures = wait(futures, return_when="FIRST_COMPLETED")
+                for future in done:
+                    logger.info(f"Finished processing {future.result()}")
+            future = client.submit(process_slide, pipeline_setup, slide_file, cfg)
+            futures = [future] + futures
+
+        # Wait for all slides to finish
+        logger.info(f"Waiting for {len(futures)} slides to finish processing")
+        done, futures = wait(futures, return_when="ALL_COMPLETED")
     else:
-        return saving_future
+        for slide_file in slide_files:
+            process_slide(pipeline_setup, slide_file, cfg, client=client, optimize_graph=False)
+
+    # Shutdown the Dask cluster
+    logger.info("Shutting down Dask cluster")
+    client.shutdown()
+
+    logger.info("Done")
 
 
 if __name__ == "__main__":
-    t0 = time()
-
-    # Setup the pipeline
-    setup = setup_pipeline(gpu_devices=(2,))
-    logger.info(f"Setup took {(t1:=time()) - t0:.2f} seconds")
-
-    # Process the slide
-    process_slide(setup, SLIDE_FILE, synchronous_saving=True)
-    logger.info(f"Processing took {(t2:=time()) - t1:.2f} seconds")
+    main()

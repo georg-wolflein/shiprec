@@ -32,7 +32,7 @@ def load_slide(
         level_mpp = slide.level_downsamples[level] * slide_mpp
         logger.debug(f"Using level {level} with {level_mpp=:.3f} for {slide_mpp=:.3f} and {target_mpp=:.3f}")
 
-    target_slide_chunk_size = 224 * 20
+    target_slide_chunk_size = 224 * 16
     loaded_slide_chunk_size = np.ceil(target_slide_chunk_size * target_mpp / level_mpp).astype(int)
 
     def resize_chunk(chunk):

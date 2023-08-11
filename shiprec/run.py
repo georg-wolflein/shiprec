@@ -11,7 +11,7 @@ from loguru import logger
 from concurrent.futures import Future
 from torch import nn
 from typing import NamedTuple, Sequence, Union, Tuple
-from time import time
+from time import time, sleep
 from omegaconf import DictConfig
 from tqdm import tqdm
 import functools
@@ -32,18 +32,19 @@ class PipelineSetup(NamedTuple):
     has_gpu_workers: bool
 
 
-def find_slides(cfg: DictConfig) -> Sequence[Path]:
+def find_slides(cfg: DictConfig, check_status: bool = True) -> Sequence[Path]:
     """Find all slides in the input directory."""
     input_dir = Path(cfg.input.path)
     assert input_dir.is_dir(), f"Input directory {input_dir} does not exist"
     slide_files = list(input_dir.glob(cfg.input.glob))
     if slide_files:
         logger.info(f"Found {len(slide_files)} slides in {input_dir}")
-        status_folder = Path(cfg.output.path) / "status"
-        slide_files = [
-            slide_file for slide_file in slide_files if not (status_folder / f"{slide_file.stem}.done").exists()
-        ]
-        logger.info(f"{len(slide_files)} slides have not been processed yet")
+        if check_status:
+            status_folder = Path(cfg.output.path) / "status"
+            slide_files = [
+                slide_file for slide_file in slide_files if not (status_folder / f"{slide_file.stem}.done").exists()
+            ]
+            logger.info(f"{len(slide_files)} slides have not been processed yet")
     else:
         logger.warning(f"No slides found in {input_dir}")
     return sorted(slide_files)
@@ -114,14 +115,14 @@ def process_slide(
     slide_file: Path,
     cfg: DictConfig,
     client: Client = None,
-    check_status: bool = True,
+    check_status: bool = False,
 ):
     """Process a slide and save the features to disk."""
     start_time = time()
     slide_file = Path(slide_file)
     if client is None:
         client = get_client()
-        # wait = secede_wait_rejoin # TODO: check if this is faster
+        wait = secede_wait_rejoin  # TODO: check if this is faster
 
     optimize_graph = cfg.cluster.optimize_graph
 
@@ -152,6 +153,8 @@ def process_slide(
     patches, patch_coords = split_slide_into_patches(slide, patch_size=cfg.pipeline.patch_size)
     patch_grid_shape = patches.shape[:2]
     patches, patch_coords = flatten_patches_and_coords(patches, patch_coords)
+    patches = patches.rechunk(("auto", -1, -1, -1))  # TODO: remove?
+    logger.debug(f"Loaded patches will be of shape {patches.shape} with chunks {patches.chunks}")
 
     # Filter out background patches
     patch_mask = get_canny_foreground_mask(patches)
@@ -171,10 +174,12 @@ def process_slide(
     patches.compute_chunk_sizes()
     patch_coords.compute_chunk_sizes()
     patch_mask.compute_chunk_sizes()
-    patches = patches.rechunk(
-        (cfg.pipeline.stain_normalization.batch_size, cfg.pipeline.patch_size, cfg.pipeline.patch_size, 3)
+    # patches = patches.rechunk(
+    #     (cfg.pipeline.stain_normalization.batch_size, cfg.pipeline.patch_size, cfg.pipeline.patch_size, 3)
+    # )
+    logger.debug(
+        f"Reduced number of patches from {np.prod(patch_grid_shape)} to {patches.shape[0]}; chunked as {patches.chunks[0]}"
     )
-    logger.debug(f"Reduced number of patches from {np.prod(patch_grid_shape)} to {patches.shape[0]}")
 
     # Compute the patch index grid locally
     patch_grid = np.zeros(patch_grid_shape, dtype=int) - 1
@@ -187,9 +192,9 @@ def process_slide(
     if cfg.pipeline.stain_normalization.enabled:
         normalized = normalizer.normalize_flattened_image(patches.reshape(-1, 3))
         normalized = normalized.reshape(patches.shape)
-        normalized = normalized.rechunk(
-            (cfg.pipeline.feature_extraction.batch_size, cfg.pipeline.patch_size, cfg.pipeline.patch_size, 3)
-        )
+        # normalized = normalized.rechunk(
+        #     (cfg.pipeline.feature_extraction.batch_size, cfg.pipeline.patch_size, cfg.pipeline.patch_size, 3)
+        # )
         normalized = normalized.persist(optimize_graph=optimize_graph)
         futures_to_cancel.append(normalized)
         logger.debug("Performing Macenko normalization")
@@ -247,10 +252,19 @@ def process_slide(
                 da.to_zarr(patch_coords.rechunk(-1), slide_folder / "coords.zarr", overwrite=True, compute=False)
             )
         if cfg.output.patches.save:
-            saving_futures.append(da.to_zarr(patches, slide_folder / "patches.zarr", overwrite=True, compute=False))
+            saving_futures.append(
+                da.to_zarr(
+                    patches.rechunk((256, -1, -1, -1)), slide_folder / "patches.zarr", overwrite=True, compute=False
+                )
+            )
         if cfg.output.normalized_patches.save:
             saving_futures.append(
-                da.to_zarr(normalized, slide_folder / "normalized_patches.zarr", overwrite=True, compute=False)
+                da.to_zarr(
+                    normalized.rechunk((256, -1, -1, -1)),
+                    slide_folder / "normalized_patches.zarr",
+                    overwrite=True,
+                    compute=False,
+                )
             )
         if cfg.output.patch_index_grid.save:
             saving_futures.append(
@@ -294,8 +308,10 @@ def main(cfg: DictConfig):
     # Setup the pipeline
     client, pipeline_setup = setup(cfg)
 
+    check_status = False
+
     # Find all slides
-    slide_files = find_slides(cfg)
+    slide_files = find_slides(cfg, check_status=check_status)
 
     # Process slides
     t0 = time()
@@ -309,12 +325,14 @@ def main(cfg: DictConfig):
                     finished_slide, elapsed = future.result()
                     times_per_slide.append(elapsed)
                     logger.info(
-                        f"Finished processing {finished_slide.stem} in {elapsed or 0:.2f} seconds (mean: {np.nanmean(times_per_slide):.2f} seconds per side)"
+                        f"Finished processing {finished_slide.stem} in {elapsed/60:.2f} minutes (mean: {np.nanmean(times_per_slide)/60:.2f} minutes per side)"
                     )
                     pbar.update(1)
                     del future
             logger.info(f"Queuing slide {i+1}/{len(slide_files)}: {slide_file.name}")
-            future = client.submit(contextual_fn(process_slide, slide_id=i), pipeline_setup, slide_file, cfg)
+            future = client.submit(
+                contextual_fn(process_slide, slide_id=i), pipeline_setup, slide_file, cfg, None, check_status
+            )
             futures.add(future)
 
         # Wait for all slides to finish
@@ -324,19 +342,15 @@ def main(cfg: DictConfig):
                 finished_slide, elapsed = future.result()
                 times_per_slide.append(elapsed)
                 logger.info(
-                    f"Finished processing {finished_slide.stem} in {elapsed:.2f} seconds (mean: {np.nanmean(times_per_slide):.2f} seconds per side)"
+                    f"Finished processing {finished_slide.stem} in {elapsed/60:.2f} minutes (mean: {np.nanmean(times_per_slide)/60:.2f} minutes per slide)"
                 )
                 pbar.update(1)
                 del future
         done, futures = wait(futures, return_when="ALL_COMPLETED")
-    # else:
-    #     for slide_file in tqdm(slide_files, desc="Processing slides"):
-    #         finished_slide, elapsed = process_slide(pipeline_setup, slide_file, cfg, client=client)
-    #         times_per_slide.append(elapsed)
 
     total_time = time() - t0
     logger.info(
-        f"Finished processing {len(slide_files)} slides in {total_time:.2f} seconds (mean: {np.nanmean(times_per_slide):.2f} seconds per side sequentially, {total_time / (len(slide_files) - np.isnan(np.array(times_per_slide)).sum()):.2f} seconds per slide in parallel when )"
+        f"Finished processing {len(slide_files)} slides in {total_time/60:.2f} minutes (mean: {np.nanmean(times_per_slide)/60:.2f} minutes per slide sequentially, {total_time / (len(slide_files) - np.isnan(np.array(times_per_slide)).sum())/60:.2f} minutes per slide in parallel)"
     )
 
     # Shutdown the Dask cluster

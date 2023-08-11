@@ -1,6 +1,6 @@
 # shiprec
 
-**s**calable **h**istopathology **i**mage **p**rerocessing and featu**re** extra**c**tion
+**s**calable **h**istopathology **i**mage **p**reprocessing and featu**re** extra**c**tion
 
 ## Installation
 ```bash
@@ -22,13 +22,21 @@ You may provide command-line overrides of specific configuration options from `c
 
 ## Benchmark
 
-I ran a benchmark with the following setup on the first 10 slides of TCGA-BRCA:
-- 16 workers
-- 1 GPU
-- 2 slides in parallel
+I ran a benchmark with the following setup on the first 10 slides of TCGA-BRCA with various setups, as well as the [E2E pipeline](https://github.com/KatherLab/end2end-WSI-preprocessing).
+All experiments were run on the same planet computer.
 
-### Results
-- **total time for 10 slides:** 1862 seconds (~31.0 minutes)
-- **average time per slide (parallel):** 186 seconds (~3.1 minutes)
-- **actual average time per slide:** 351 seconds (~5.9 minutes) [this is about twice the parallel time because we compute 2 slides in parallel]
 
+| **SETUP**                                            | E2E      | A        | B        | C        | D        | E        |
+| ---------------------------------------------------- | -------- | -------- | -------- | -------- | -------- | -------- |
+| number of CPU workers                                | 8        | 8        | 8        | 16       | 16       | 16       |
+| number of slides in parallel                         | 1        | 1        | 2        | 2        | 4        | 8        |
+| GPUs                                                 | 1        | 1        | 1        | 1        | 1        | 1        |
+| save image files                                     | no*      | yes      | yes      | yes      | yes      | yes      |
+| **RESULTS**                                          |
+| total time for 10 slides (minutes)                   | 54.3     | 22.5     | 21.0     | 18.8     | 16.8     | 15.8     |
+| average time per slide (= total time / 10) (minutes) | 5.43     | 2.25     | 2.10     | 1.88     | 1.68     | 1.58     |
+| average time per slide start to finish (minutes)     | 5.43     | 2.25     | 4.02     | 3.67     | 5.57     | 9.72     |
+| **est. throughput (slides/hr)**                      | **11.1** | **26.7** | **28.6** | **31.9** | **35.7** | **38.0** |
+
+
+(* removed image saving feature from E2E pipeline to make it faster)

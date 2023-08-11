@@ -22,7 +22,7 @@ You may provide command-line overrides of specific configuration options from `c
 
 ## Benchmark
 
-I ran a benchmark with the following setup on the first 10 slides of TCGA-BRCA with various setups, as well as the [E2E pipeline](https://github.com/KatherLab/end2end-WSI-preprocessing).
+I ran a benchmark on the first 10 slides of TCGA-BRCA with various setups, as well as the [E2E pipeline](https://github.com/KatherLab/end2end-WSI-preprocessing).
 All experiments were run on the same planet computer.
 
 

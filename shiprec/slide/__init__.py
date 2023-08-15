@@ -25,9 +25,15 @@ def load_slide(
             f"Slide has {slide.level_count} levels with following downsamples: {({k: v for k, v in enumerate(slide.level_downsamples)})}"
         )
 
+        # Intelligently choose correct level
+        proposed_level = slide.get_best_level_for_downsample(target_mpp / slide_mpp)
         if level is None:
-            # Intelligently choose correct level
-            level = slide.get_best_level_for_downsample(target_mpp / slide_mpp)
+            level = proposed_level
+        elif proposed_level < level:
+            logger.warning(
+                f"The requested slide input level {level} is too high for {target_mpp=:.3f} and {slide_mpp=:.3f}; using level {proposed_level} instead."
+            )
+            level = proposed_level
 
         level_mpp = slide.level_downsamples[level] * slide_mpp
         logger.debug(f"Using level {level} with {level_mpp=:.3f} for {slide_mpp=:.3f} and {target_mpp=:.3f}")

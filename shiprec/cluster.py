@@ -34,6 +34,7 @@ class MixedCluster(SpecCluster):
         interface=None,
         scheduler_kwargs=None,
         scheduler_sync_interval=1,
+        set_cuda_env: bool = True,
         **worker_kwargs,
     ):
         self.status = None
@@ -85,14 +86,14 @@ class MixedCluster(SpecCluster):
             return {"cls": worker_class, "options": options}
 
         cpu_workers = {
-            f"cpu_{i}": make_worker({**worker_kwargs, "env": {"CUDA_VISIBLE_DEVICES": ""}})
+            f"cpu_{i}": make_worker({**worker_kwargs, "env": {"CUDA_VISIBLE_DEVICES": ""} if set_cuda_env else {}})
             for i in range(n_cpu_workers)
         }
         gpu_workers = {
             f"gpu_{gpu}": make_worker(
                 {
                     **worker_kwargs,
-                    "env": {"CUDA_VISIBLE_DEVICES": f"{gpu}"},
+                    "env": {"CUDA_VISIBLE_DEVICES": f"{gpu}"} if set_cuda_env else {},
                     "resources": {"GPU": 1},
                 }
             )

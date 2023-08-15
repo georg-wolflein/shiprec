@@ -50,13 +50,14 @@ def find_slides(cfg: DictConfig, check_status: bool = True) -> Sequence[Path]:
     return sorted(slide_files)
 
 
-def setup(cfg: DictConfig) -> Tuple[Client, PipelineSetup]:
+def setup(cfg: DictConfig, set_cuda_env: bool = True) -> Tuple[Client, PipelineSetup]:
     start_time = time()
     # Start the Dask cluster
     cluster = MixedCluster(
         n_cpu_workers=cfg.cluster.n_cpu_workers,
         gpu_devices=cfg.cluster.gpu_devices or (),
         memory_limit=cfg.cluster.memory_limit,
+        set_cuda_env=set_cuda_env,
     )
     client = Client(cluster.scheduler_address)
     gpu_workers = [
@@ -73,9 +74,12 @@ def setup(cfg: DictConfig) -> Tuple[Client, PipelineSetup]:
         # stain_target = client.persist(stain_target)
 
         # Load Macenko normalizer
-        normalizer = DaskMacenkoNormalizer(exact=True)
+        normalizer = DaskMacenkoNormalizer(exact=cfg.pipeline.stain_normalization.exact)
         logger.debug("Fitting Macenko normalizer to template")
         normalizer.fit(stain_target, persist=True)
+        logger.debug(
+            f"Macenko normalization fit with the following HE and maxC parameters:\n{normalizer.HERef.compute()}\n{normalizer.maxCRef.compute()}"
+        )
     else:
         assert (
             not cfg.output.normalized_patches.save
@@ -143,7 +147,9 @@ def process_slide(
 
     # Load the slide
     try:
-        slide = load_slide(slide_file, target_mpp=cfg.pipeline.target_mpp, backend=cfg.input.slide_backend)
+        slide = load_slide(
+            slide_file, target_mpp=cfg.pipeline.target_mpp, backend=cfg.input.slide_backend, level=cfg.input.level
+        )
     except MPPExtractionError:
         logger.warning(f"Could not extract MPP for {slide_file}, skipping")
         write_status_file("mpp_extraction_error")
@@ -190,15 +196,19 @@ def process_slide(
 
     # Perform Macenko normalization
     if cfg.pipeline.stain_normalization.enabled:
-        normalized = normalizer.normalize_flattened_image(patches.reshape(-1, 3))
+        normalized, HE, maxC = normalizer.normalize_flattened_image(patches.reshape(-1, 3), rechunk=False)
         normalized = normalized.reshape(patches.shape)
         # normalized = normalized.rechunk(
         #     (cfg.pipeline.feature_extraction.batch_size, cfg.pipeline.patch_size, cfg.pipeline.patch_size, 3)
         # )
-        normalized = normalized.persist(optimize_graph=optimize_graph)
+        # TODO: remove HE from the computation (we don't need it except logging)
+        normalized, HE, maxC = client.persist((normalized, HE, maxC), optimize_graph=optimize_graph)
         futures_to_cancel.append(normalized)
         logger.debug("Performing Macenko normalization")
         wait(normalized)
+        logger.debug(
+            f"Macenko normalization finished with the following HE and maxC parameters:\n{HE.compute()}\n{maxC.compute()}"
+        )
         # tqdm_dask(normalized, desc="Macenko normalization")
     else:
         normalized = patches
@@ -224,19 +234,30 @@ def process_slide(
         cache_folder = Path(cfg.output.path) / "cache"
         cache_folder.mkdir(parents=True, exist_ok=True)
 
-        @dask.delayed
-        def save_to_h5py(features, coords):
-            import h5py
+        import h5py
 
-            with h5py.File(features_folder / f"{slide_file.stem}.h5", "w") as f:
-                if cfg.output.features.save:
-                    f.create_dataset("/features", data=features.compute())
-                if cfg.output.coords.save:
-                    f.create_dataset("/coords", data=coords.compute())
-                if cfg.patch_index_grid.save:
-                    f.create_dataset("/patch_index_grid", data=patch_grid.compute())
+        def create_ds(f, name, data, rechunk: bool = False):
+            if rechunk:
+                data = data.rechunk(-1 if rechunk is True else rechunk)
+            ds = f.create_dataset(f"/{name}", shape=data.shape, chunks=data.chunks, data=features.dtype)
+            return data, ds
 
-        saving_future = client.submit(save_to_h5py, features, patch_coords)
+        to_save = []
+        with h5py.File(features_folder / f"{slide_file.stem}.h5", "w") as f:
+            if cfg.output.features.save:
+                to_save.append(create_ds(f, "features", features, rechunk=True))
+            if cfg.output.coords.save:
+                to_save.append(create_ds(f, "coords", patch_coords, rechunk=True))
+            if cfg.output.patch_index_grid.save:
+                to_save.append(create_ds(f, "patch_index_grid", patch_grid, rechunk=True))
+        if cfg.output.patches.save or cfg.output.normalized_patches.save:
+            with h5py.File(cache_folder / f"{slide_file.stem}.h5", "w") as f:
+                if cfg.output.patches.save:
+                    to_save.append(create_ds(f, "patches", patches, rechunk=(256, -1, -1, -1)))
+                if cfg.output.normalized_patches.save:
+                    to_save.append(create_ds(f, "normalized_patches", normalized, rechunk=(256, -1, -1, -1)))
+        da.store(*zip(*to_save), compute=True)
+
     elif cfg.output.format == "zarr":
         logger.debug("Saving to Zarr")
 
@@ -245,16 +266,16 @@ def process_slide(
         saving_futures = []
         if cfg.output.features.save:
             saving_futures.append(
-                da.to_zarr(features.rechunk(-1), slide_folder / "features.zarr", overwrite=True, compute=False)
+                da.to_zarr(features.rechunk(-1), slide_folder / "features.zarr", overwrite=True, compute=True)
             )
         if cfg.output.coords.save:
             saving_futures.append(
-                da.to_zarr(patch_coords.rechunk(-1), slide_folder / "coords.zarr", overwrite=True, compute=False)
+                da.to_zarr(patch_coords.rechunk(-1), slide_folder / "coords.zarr", overwrite=True, compute=True)
             )
         if cfg.output.patches.save:
             saving_futures.append(
                 da.to_zarr(
-                    patches.rechunk((256, -1, -1, -1)), slide_folder / "patches.zarr", overwrite=True, compute=False
+                    patches.rechunk((256, -1, -1, -1)), slide_folder / "patches.zarr", overwrite=True, compute=True
                 )
             )
         if cfg.output.normalized_patches.save:
@@ -263,7 +284,7 @@ def process_slide(
                     normalized.rechunk((256, -1, -1, -1)),
                     slide_folder / "normalized_patches.zarr",
                     overwrite=True,
-                    compute=False,
+                    compute=True,
                 )
             )
         if cfg.output.patch_index_grid.save:
@@ -272,16 +293,11 @@ def process_slide(
                     da.from_array(patch_grid).rechunk(-1),
                     slide_folder / "patch_index_grid.zarr",
                     overwrite=True,
-                    compute=False,
+                    compute=True,
                 )
             )
-        saving_future = tuple(saving_futures)
     else:
         raise ValueError(f"Unknown output format {cfg.output.format}")
-
-    # Show a progress bar for saving
-    wait(saving_future)
-    # tqdm_dask(saving_future, desc="Saving output")
 
     # Write status file
     write_status_file()

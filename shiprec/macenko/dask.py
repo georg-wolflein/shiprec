@@ -176,17 +176,17 @@ class DaskMacenkoNormalizer(HENormalizer):
         Inorm = Inorm.astype(I.dtype)
         Inorm = Inorm.T
         Inorm = Inorm.rechunk(I.chunks)
-        return Inorm
+        return Inorm, HE, maxC
 
     def normalize(self, I, Io=240, alpha=1, beta=0.15):
         I_chunks = I.chunks
         h, w, c = I.shape
         I = I.reshape((-1, 3))
 
-        Inorm = self.normalize_flattened_image(I, Io, alpha, beta)
+        Inorm, HE, maxC = self.normalize_flattened_image(I, Io, alpha, beta)
 
         Inorm = da.reshape(Inorm, (h, w, c))
-        return Inorm
+        return Inorm, HE, maxC
 
     def __getstate__(self) -> object:
         return {

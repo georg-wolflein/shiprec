@@ -277,7 +277,7 @@ def process_slide(
         saving_futures = []
         if cfg.output.features.save and cfg.pipeline.feature_extraction.enabled:
             saving_futures.append(
-                da.to_zarr(features.rechunk(-1), slide_folder / "features.zarr", overwrite=True, compute=True)
+                da.to_zarr(features.rechunk(-1), slide_folder / "feats.zarr", overwrite=True, compute=True)
             )
         if cfg.output.coords.save:
             saving_futures.append(
@@ -301,7 +301,7 @@ def process_slide(
         if cfg.output.patch_index_grid.save:
             saving_futures.append(
                 da.to_zarr(
-                    da.from_array(patch_grid).rechunk(-1),
+                    patch_grid.rechunk(-1),
                     slide_folder / "patch_index_grid.zarr",
                     overwrite=True,
                     compute=True,

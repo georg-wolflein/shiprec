@@ -18,3 +18,5 @@ torchvision
 gdown
 bokeh==3.2.0 # !=3.0.*,>=2.4.2
 h5py
+pytest
+# pip install --no-build-isolation spams

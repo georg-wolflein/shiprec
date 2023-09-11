@@ -28,7 +28,7 @@ pipeline:
     weights: weights/ctranspath.pth
 output:
   path: /mnt/bulk/gwoelflein/georg-tcga-slides/shiprec/TCGA-BRCA-DX-IMGS_1133 # path to output folder
-  format: zarr # supported options: h5, zarr (zarr is recommended)
+  format: zarr # supported options: h5, zarr (zarr is recommended, and h5 currently does not work due to https://github.com/dask/dask/issues/2488)
   features:
     save: true # whether to save the extracted features
   coords:

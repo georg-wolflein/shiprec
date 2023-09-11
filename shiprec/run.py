@@ -275,7 +275,7 @@ def process_slide(
         slide_folder = Path(cfg.output.path) / slide_file.stem
 
         saving_futures = []
-        if cfg.output.features.save:
+        if cfg.output.features.save and cfg.pipeline.feature_extraction.enabled:
             saving_futures.append(
                 da.to_zarr(features.rechunk(-1), slide_folder / "features.zarr", overwrite=True, compute=True)
             )
@@ -289,7 +289,7 @@ def process_slide(
                     patches.rechunk((256, -1, -1, -1)), slide_folder / "patches.zarr", overwrite=True, compute=True
                 )
             )
-        if cfg.output.normalized_patches.save:
+        if cfg.output.normalized_patches.save and cfg.pipeline.stain_normalization.enabled:
             saving_futures.append(
                 da.to_zarr(
                     normalized.rechunk((256, -1, -1, -1)),

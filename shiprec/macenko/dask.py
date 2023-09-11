@@ -175,11 +175,10 @@ class DaskMacenkoNormalizer(HENormalizer):
         Inorm[Inorm > 255] = 255
         Inorm = Inorm.astype(I.dtype)
         Inorm = Inorm.T
-        Inorm = Inorm.rechunk(I.chunks)
+        # Inorm = Inorm.rechunk(I.chunks)
         return Inorm, HE, maxC
 
     def normalize(self, I, Io=240, alpha=1, beta=0.15):
-        I_chunks = I.chunks
         h, w, c = I.shape
         I = I.reshape((-1, 3))
 

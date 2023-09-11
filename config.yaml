@@ -12,7 +12,7 @@ input:
   num_slides: # number of slides to process; if empty, all slides will be processed
   level: 0 # level to extract patches from, leave blank to automatically select the level based on target_mpp
 pipeline:
-  n_parallel_slides: 4 # number of slides to process in parallel
+  n_parallel_slides: 8 # number of slides to process in parallel
   patch_size: 224
   target_mpp: ${eval:256.0 / 224.0}
   stain_normalization:
@@ -22,6 +22,7 @@ pipeline:
     template: normalization_template.jpg # path to template for Macenko normalization
     exact: true # whether to compute percentiles exactly or with an approximation (tdigest)
   feature_extraction:
+    enabled: true
     batch_size: ${pipeline.stain_normalization.batch_size}  # recommended to be a multiple or divisor of feature extraction batch size
     model: ctranspath
     weights: weights/ctranspath.pth

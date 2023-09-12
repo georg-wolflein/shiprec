@@ -272,28 +272,29 @@ def process_slide(
     elif cfg.output.format == "zarr":
         logger.debug("Saving to zarr")
 
-        slide_folder = Path(cfg.output.path) / slide_file.stem
+        import zarr
+
+        zarr_folder = Path(cfg.output.path) / f"{slide_file.stem}.zarr"
+
+        # Create the zarr group
+        zarr.group(store=str(zarr_folder), overwrite=True)
 
         saving_futures = []
         if cfg.output.features.save and cfg.pipeline.feature_extraction.enabled:
-            saving_futures.append(
-                da.to_zarr(features.rechunk(-1), slide_folder / "feats.zarr", overwrite=True, compute=True)
-            )
+            saving_futures.append(da.to_zarr(features.rechunk(-1), zarr_folder / "feats", overwrite=True, compute=True))
         if cfg.output.coords.save:
             saving_futures.append(
-                da.to_zarr(patch_coords.rechunk(-1), slide_folder / "coords.zarr", overwrite=True, compute=True)
+                da.to_zarr(patch_coords.rechunk(-1), zarr_folder / "coords", overwrite=True, compute=True)
             )
         if cfg.output.patches.save:
             saving_futures.append(
-                da.to_zarr(
-                    patches.rechunk((256, -1, -1, -1)), slide_folder / "patches.zarr", overwrite=True, compute=True
-                )
+                da.to_zarr(patches.rechunk((256, -1, -1, -1)), zarr_folder / "patches", overwrite=True, compute=True)
             )
         if cfg.output.normalized_patches.save and cfg.pipeline.stain_normalization.enabled:
             saving_futures.append(
                 da.to_zarr(
                     normalized.rechunk((256, -1, -1, -1)),
-                    slide_folder / "normalized_patches.zarr",
+                    zarr_folder / "normalized_patches",
                     overwrite=True,
                     compute=True,
                 )
@@ -302,7 +303,7 @@ def process_slide(
             saving_futures.append(
                 da.to_zarr(
                     patch_grid.rechunk(-1),
-                    slide_folder / "patch_index_grid.zarr",
+                    zarr_folder / "patch_index_grid",
                     overwrite=True,
                     compute=True,
                 )

@@ -203,14 +203,11 @@ def process_slide(
         # normalized = normalized.rechunk(
         #     (cfg.pipeline.feature_extraction.batch_size, cfg.pipeline.patch_size, cfg.pipeline.patch_size, 3)
         # )
-        # TODO: remove HE from the computation (we don't need it except logging)
-        normalized, HE, maxC = client.persist((normalized, HE, maxC), optimize_graph=optimize_graph)
+        normalized = client.persist(normalized, optimize_graph=optimize_graph)
         futures_to_cancel.append(normalized)
         logger.debug("Performing Macenko normalization")
         wait(normalized)
-        logger.debug(
-            f"Macenko normalization finished with the following HE and maxC parameters:\n{HE.compute()}\n{maxC.compute()}"
-        )
+        logger.debug(f"Macenko normalization finished")
         # tqdm_dask(normalized, desc="Macenko normalization")
     else:
         normalized = patches

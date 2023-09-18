@@ -333,7 +333,7 @@ def main(cfg: DictConfig):
     # Setup the pipeline
     client, pipeline_setup = setup(cfg)
 
-    check_status = False
+    check_status = True
 
     # Find all slides
     slide_files = find_slides(cfg, check_status=check_status)
@@ -343,17 +343,23 @@ def main(cfg: DictConfig):
     times_per_slide = []
     futures = set()
     with tqdm(total=len(slide_files), desc="Processing slides") as pbar:
-        for i, slide_file in enumerate(slide_files):
-            if len(futures) >= cfg.pipeline.n_parallel_slides:
-                done, futures = wait(futures, return_when="FIRST_COMPLETED")
-                for future in done:
-                    finished_slide, elapsed = future.result()
+
+        def wait_for_future(futures):
+            done, futures = wait(futures, return_when="FIRST_COMPLETED")
+            for future in done:
+                finished_slide, elapsed = future.result()
+                if elapsed is not None:
                     times_per_slide.append(elapsed)
                     logger.info(
                         f"Finished processing {finished_slide.stem} in {elapsed/60:.2f} minutes (mean: {np.nanmean(times_per_slide)/60:.2f} minutes per side)"
                     )
-                    pbar.update(1)
-                    del future
+                pbar.update(1)
+                del future
+            return futures
+
+        for i, slide_file in enumerate(slide_files):
+            while len(futures) >= cfg.pipeline.n_parallel_slides:
+                futures = wait_for_future(futures)
             logger.info(f"Queuing slide {i+1}/{len(slide_files)}: {slide_file.name}")
             future = client.submit(
                 contextual_fn(process_slide, slide_id=i), pipeline_setup, slide_file, cfg, None, check_status
@@ -361,17 +367,9 @@ def main(cfg: DictConfig):
             futures.add(future)
 
         # Wait for all slides to finish
-        while futures:
-            done, futures = wait(futures, return_when="FIRST_COMPLETED")
-            for future in done:
-                finished_slide, elapsed = future.result()
-                times_per_slide.append(elapsed)
-                logger.info(
-                    f"Finished processing {finished_slide.stem} in {elapsed/60:.2f} minutes (mean: {np.nanmean(times_per_slide)/60:.2f} minutes per slide)"
-                )
-                pbar.update(1)
-                del future
-        done, futures = wait(futures, return_when="ALL_COMPLETED")
+        while futures := wait_for_future(futures):
+            pass
+        done, futures = wait(futures, return_when="ALL_COMPLETED")  # this should be a no-op
 
     total_time = time() - t0
     logger.info(

@@ -23,3 +23,4 @@ services:
     volumes:
       - "${HOST_APP_FOLDER:-~/shiprec}:/app"
       - "/mnt/isilon1/georg:/data"
+      - "/mnt/isilon1/pathology:/pathology"

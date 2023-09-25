@@ -8,7 +8,7 @@ apt install openslide-tools
 python -m venv env
 source env/bin/activate
 pip install numpy wheel Cython
-source env/bin/activate
+pip install -r requirements.txt
 ```
 
 ## Configuration

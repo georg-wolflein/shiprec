@@ -23,6 +23,10 @@ RUN apt update && \
 RUN apt -o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false update && \
     apt install -y libgl1-mesa-glx vim
 
+# Install openslide-tools
+RUN RUN apt update && \
+    apt install -y openslide-tools
+
 # Install poetry
 # RUN pip install --upgrade pip setuptools && \
 #     pip install poetry && \

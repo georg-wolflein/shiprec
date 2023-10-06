@@ -5,6 +5,7 @@ import numpy as np
 from typing import Tuple
 from pathlib import Path
 import re
+from loguru import logger
 
 from .readers import SlideReader
 from .mpp import MPPExtractionError, MPPExtractor

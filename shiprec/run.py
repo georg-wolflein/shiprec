@@ -152,8 +152,14 @@ def process_slide(
             slide_file, target_mpp=cfg.pipeline.target_mpp, backend=cfg.input.slide_backend, level=cfg.input.level
         )
     except MPPExtractionError:
-        logger.warning(f"Could not extract MPP for {slide_file}, skipping")
+        logger.error(f"Could not extract MPP for {slide_file}, skipping")
         write_status_file("mpp_extraction_error")
+        return slide_file, None
+    except Exception:
+        logger.opt(exception=True).error(
+            f"Could not load {slide_file} with backend {cfg.input.slide_backend}, skipping"
+        )
+        write_status_file("load_error")
         return slide_file, None
 
     # Split the slide into patches

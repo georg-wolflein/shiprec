@@ -4,6 +4,7 @@ from ctypes import c_uint32
 import numpy as np
 from typing import Tuple
 from pathlib import Path
+from functools import cached_property
 
 from .readers import SlideReader
 from .mpp import MPPExtractionError, MPPExtractor
@@ -13,7 +14,6 @@ class OpenSlideReader(SlideReader):
     def __init__(self, path: Path):
         super().__init__(path)
         self._slide = openslide.OpenSlide(str(path))
-        self._mpp = None
 
     def read_region(self, loc: Tuple[int, int], level: int, size: Tuple[int, int]) -> np.ndarray:
         """Adapted from openslide.lowlevel.read_region() to not use PIL images, but directly return a numpy array."""
@@ -27,11 +27,9 @@ class OpenSlideReader(SlideReader):
         img = np.frombuffer(buf, dtype=np.uint8).reshape(*size[::-1], 4)[..., :3]  # remove alpha channel
         return img
 
-    @property
+    @cached_property
     def mpp(self) -> float:
-        if self._mpp is None:
-            self._mpp = openslide_mpp_extractor(self._slide)
-        return self._mpp
+        return openslide_mpp_extractor(self._slide)
 
     @property
     def level_dimensions(self) -> Tuple[int, int]:

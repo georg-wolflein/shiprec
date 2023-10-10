@@ -277,7 +277,8 @@ def process_slide(
 
         import zarr
 
-        zarr_folder = Path(cfg.output.path) / f"{slide_file.stem}.zarr"
+        zarr_folder = Path(cfg.output.path) / slide_file.with_suffix(".zarr").name
+        zarr_folder.parent.mkdir(parents=True, exist_ok=True)
 
         # Create the zarr group
         zarr.group(store=str(zarr_folder), overwrite=True)

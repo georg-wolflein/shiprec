@@ -5,6 +5,8 @@ import numpy as np
 from typing import Tuple
 from pathlib import Path
 from functools import cached_property
+import re
+from loguru import logger
 
 from .readers import SlideReader
 from .mpp import MPPExtractionError, MPPExtractor
@@ -61,7 +63,10 @@ def extract_mpp_from_properties(slide: openslide.OpenSlide) -> float:
 def extract_mpp_from_metadata(slide: openslide.OpenSlide) -> float:
     import xml.dom.minidom as minidom
 
-    xml_path = slide.properties["tiff.ImageDescription"]
+    try:
+        xml_path = slide.properties["tiff.ImageDescription"]
+    except KeyError:
+        raise MPPExtractionError
     try:
         doc = minidom.parseString(xml_path)
     except Exception:
@@ -77,11 +82,35 @@ def extract_mpp_from_metadata(slide: openslide.OpenSlide) -> float:
 
 @openslide_mpp_extractor.register
 def extract_mpp_from_comments(slide: openslide.OpenSlide) -> float:
-    import re
-
-    slide_properties = slide.properties.get("openslide.comment")
+    try:
+        slide_properties = slide.properties["openslide.comment"]
+    except KeyError:
+        raise MPPExtractionError
     pattern = r"<PixelSizeMicrons>(.*?)</PixelSizeMicrons>"
     match = re.search(pattern, slide_properties)
     if not match:
         raise MPPExtractionError
     return match.group(1)
+
+
+@openslide_mpp_extractor.register
+def extract_mpp_from_xy_and_resolution(slide: openslide.OpenSlide) -> float:
+    # https://lists.andrew.cmu.edu/pipermail/openslide-users/2017-April/001385.html
+    try:
+        unit = slide.properties["tiff.ResolutionUnit"]
+        x = float(slide.properties["tiff.XResolution"])
+        y = float(slide.properties["tiff.YResolution"])
+    except KeyError:
+        raise MPPExtractionError
+
+    if x != y:
+        logger.warning(f"X and Y resolution are not equal ({x} vs {y}). Using X resolution")
+
+    if unit == "centimeter":
+        numerator = 10_000
+    elif unit == "inch":
+        numerator = 25_400
+    else:
+        raise MPPExtractionError
+
+    return numerator / x

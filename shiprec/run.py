@@ -335,7 +335,7 @@ def contextual_fn(fn, **context):
     return wrapper
 
 
-@hydra.main(config_path=str(Path(__file__).parent.parent), config_name="config", version_base="1.2")
+@hydra.main(config_path=str(Path(__file__).parent.parent / "conf"), config_name="config", version_base="1.2")
 def main(cfg: DictConfig):
     # Setup the pipeline
     client, pipeline_setup = setup(cfg)

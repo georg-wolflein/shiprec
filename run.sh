@@ -1,0 +1,1 @@
+python -m shiprec.run cluster.gpu_devices=[] input.path=/data/data/slides/camelyon17 input.glob="*.tif" pipeline.feature_extraction.enabled=false pipeline.stain_normalization.enabled=false output.path=/data/data/shiprec/camelyon17_mpp0.5 pipeline.target_mpp=0.5 output.features.save=false output.normalized_patches.save=false pipeline.n_parallel_slides=4 cluster.n_cpu_workers=32
